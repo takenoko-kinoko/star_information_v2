@@ -1,0 +1,687 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=0.6" />
+  <title>東急線 在線モニタ（hotmist構造 × JSON直読み）</title>
+  <style>
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,"Noto Sans JP","Hiragino Sans","Yu Gothic",sans-serif;margin:0}
+    #diag{display:none;background:#fff3cd;color:#664d03;border:1px solid #ffecb5;padding:10px;margin:10px;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+    #sel{padding:12px 12px 18px 12px; position:sticky; top:0; background:#fff; z-index:10; border-bottom:1px solid #eee}
+    button{font-size:150%; color:#fff; border:0; padding:8px 12px; margin:4px; border-radius:10px}
+    button[disabled]{opacity:.55}
+    button.line26001{background:#d90240}
+    button.line26002{background:#009cd3}
+    button.line26003{background:#01aa8f}
+    button.line26004{background:#f08d41}
+    button.line26009{background:#890d84}
+    svg{z-index:1}
+    .section{position:absolute;left:0;height:96px;width:64px;display:flex;flex-direction:column;justify-content:center;z-index:2}
+    .train{position:relative;width:96px;height:24px}
+    .train.line26001{border-color:#d90240}
+    .train.line26002{border-color:#009cd3}
+    .train.line26003{border-color:#01aa8f}
+    .train.line26004{border-color:#f08d41}
+    .train.line26009{border-color:#890d84}
+    .train>.box{position:absolute;left:4px;top:0;width:52px;height:20px;background:#fff;border:solid;border-color:inherit;border-width:2px;font-size:16px}
+    .train>.up{position:absolute;left:0;top:0;width:0;height:0;border:solid;border-width:12px 4px 12px 0;border-left-color:transparent;border-right-color:inherit;border-top-color:transparent;border-bottom-color:transparent}
+    .train>.down{position:absolute;left:60px;top:0;width:0;height:0;border:solid;border-width:12px 0 12px 4px;border-left-color:inherit;border-right-color:transparent;border-top-color:transparent;border-bottom-color:transparent}
+    .train>.delay{position:absolute;left:64px;top:-4px;width:32px;height:16px;color:#f6608b;font-size:12px;font-weight:700;z-index:3}
+    .train>.form{position:absolute;left:-48px;top:-4px;width:48px;height:16px;text-align:end;color:#4886a5;font-size:12px;z-index:3}
+    .train>.info{position:absolute;left:-48px;top:10px;width:48px;height:16px;text-align:end;color:#4886a5;font-size:12px;z-index:3}
+    .train>.dest{position:absolute;left:64px;top:10px;width:64px;height:16px;color:#4886a5;font-size:12px;z-index:3}
+    #main{padding:0 24px 24px 24px}
+    #log{white-space:pre-wrap; font-family: ui-monospace,SFMono-Regular,Menlo,Consolas,monospace; padding:12px; color:#555}
+  
+    /* Modal */
+    .modal { position: fixed; inset: 0; z-index: 9999; }
+    .modal-backdrop { position: absolute; inset: 0; background: rgba(0,0,0,0.35); }
+    .modal-card {
+      position: relative;
+      max-width: 720px;
+      margin: 24px auto;
+      background: white;
+      border-radius: 12px;
+      box-shadow: 0 10px 30px rgba(0,0,0,0.25);
+      overflow: hidden;
+    }
+    .modal-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      padding: 12px 14px;
+      border-bottom: 1px solid #eee;
+    }
+    .modal-title { font-size: 16px; font-weight: bold; }
+    .modal-close {
+      font-size: 22px;
+      line-height: 22px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+    }
+    .modal-body { padding: 12px 14px; font-size: 14px; }
+    .modal-body pre {
+      white-space: pre-wrap;
+      word-break: break-word;
+      background: #f7f7f7;
+      padding: 10px;
+      border-radius: 8px;
+      overflow: auto;
+    }
+    .train { cursor: pointer; }
+    .train:active { transform: scale(0.98); }
+
+
+/* iframe modal */
+.iframe-modal{position:fixed;inset:0;z-index:10000;}
+.iframe-backdrop{position:absolute;inset:0;background:rgba(0,0,0,.35);}
+.iframe-card{
+  position:relative;
+  width:96%;
+  max-width:900px;
+  height:90%;
+  margin:3% auto;
+  background:#fff;
+  border-radius:12px;
+  display:flex;
+  flex-direction:column;
+}
+.iframe-header{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:8px 12px;
+  border-bottom:1px solid #ddd;
+  font-weight:bold;
+}
+.iframe-close{
+  font-size:22px;
+  border:none;
+  background:none;
+  cursor:pointer;
+}
+#iframeView{
+  flex:1;
+  width:100%;
+  border:none;
+}
+
+</style>
+</head>
+<body>
+  <div id="diag"></div>
+  <div id="sel"></div>
+  <div id="main"></div>
+  <div id="log"></div>
+
+<script>
+  function diag(msg){
+    const el=document.getElementById("diag");
+    el.style.display="block";
+    el.textContent=msg;
+  }
+  window.addEventListener("error",(e)=>diag("JSエラー: "+(e.message||e.error)));
+  window.addEventListener("unhandledrejection",(e)=>diag("Promiseエラー: "+(e.reason?.message||e.reason)));
+
+  const DATA_URLS = {
+    toyoko: "https://w-tid.jp/tokyu/toyoko.json",
+    meguro: "https://w-tid.jp/tokyu/meguro.json",
+    dento: "https://w-tid.jp/tokyu/dento.json",
+    oimachi: "https://w-tid.jp/tokyu/oimachi.json",
+    shinyokohama: "https://w-tid.jp/tokyu/shinyokohama.json",
+  };
+
+  const linedata = {
+    "toyoko": { uri:"toyoko", line_id:26001, line_name:"東横線", sections:[
+      {station_id:26,station_name:"渋谷",tracks:"M-4,-1L-3,-3H3L4,-1M-6,-1H6M-6,1H6M-4,1L-3,3H3L4,1M-3,-1L-2,1M-3,1L-2,-1M3,-1L2,1M3,1L2,-1",plats:[-1,1]},
+      {section_id:[2,24]},
+      {station_id:908,station_name:"代官山",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[3,25]},
+      {station_id:909,station_name:"中目黒",tracks:"M-6,-1H6M-6,1H6M3,1L2.5,0L3,-1M2.5,0H2",plats:[0]},
+      {section_id:[4,26]},
+      {station_id:910,station_name:"祐天寺",tracks:"M-6,-1H6M-6,1H6M-3,1L-2,3H2L3,1M-3,-1L-2,1M2,1L3,-1",plats:[-1,2]},
+      {section_id:[5,27]},
+      {station_id:911,station_name:"学芸大学",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[6,28]},
+      {station_id:912,station_name:"都立大学",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[7,29]},
+      {station_id:913,station_name:"自由が丘",tracks:"M-3,-1L-2,-3H2L3,-1M-6,-1H5L6,-3M-6,1H5L6,3M-3,1L-2,3H2L3,1M3.5,-1L4.5,1",plats:[-1,1]},
+      {section_id:[8,52,65,30]},
+      {station_id:914,station_name:"田園調布",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M3,-3L2,-1M3,-1L2,-3M3,3L2,1M3,1L2,3M4,-1L4.5,-2H5M4,1L4.5,2H5",plats:[-1,1]},
+      {section_id:[9,53,66,31]},
+      {station_id:915,station_name:"多摩川",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-1,1]},
+      {section_id:[10,54,67,32]},
+      {station_id:916,station_name:"新丸子",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-1,1]},
+      {section_id:[11,55,68,33]},
+      {station_id:57,station_name:"武蔵小杉",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1M4,-1L5,1M4,1L5,-1M5,3L6,-3",plats:[-1,1]},
+      {section_id:[12,56,69,34]},
+      {station_id:918,station_name:"元住吉",tracks:"M-6,-3H-5L-4,-5H4L5,-3H6M-3,-5L-2,-3H2L3,-5M-6,-1H6M-6,1H6M-3,5L-2,3H2L3,5M-6,3H-5L-4,5H4L5,3H6M-4,-1L-3.5,-2H-3M-4,1L-3.5,2H-3M6,-3L5.5,-4H5",plats:[-1,1]},
+      {section_id:[13,57,70,35]},
+      {station_id:919,station_name:"日吉",tracks:"M-2,-1L-3,-3M-2,1L-3,3M-6,-3H5L6,-1M-6,-1H5M-6,1H5M-6,3H5L6,1M2,-3L3,-1M2,3L3,1M4,-1L4.5,0H5M4,1L4.5,0",plats:[-1,1]},
+      {section_id:[14,36]},
+      {station_id:920,station_name:"綱島",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[15,37]},
+      {station_id:921,station_name:"大倉山",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[16,38]},
+      {station_id:108,station_name:"菊名",tracks:"M-3,-1L-2,-3H2L3,-1M-6,-1H6M-6,1H-4.5L-3.5,3H5L6,1M-3,3L-2,1H2L3,3M-6,-1L-5,1M-6,1L-5,-1M2,1H5M2,-1L3,1",plats:[-1,1]},
+      {section_id:[17,39]},
+      {station_id:923,station_name:"妙蓮寺",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[18,40]},
+      {station_id:924,station_name:"白楽",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[19,41]},
+      {station_id:925,station_name:"東白楽",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[20,42]},
+      {station_id:926,station_name:"反町",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[21,43]},
+      {station_id:5,station_name:"横浜",tracks:"M-6,-1H6M-6,1H6M-3,-1L-2,1M-3,1L-2,-1",plats:[0]},
+    ]},
+    "meguro": { uri:"meguro", line_id:26002, line_name:"目黒線", sections:[
+      {station_id:24,station_name:"目黒",tracks:"M-6,-1H6M-6,1H6M3,-1L2,1M3,1L2,-1",plats:[0]},
+      {section_id:[46,59]},
+      {station_id:929,station_name:"不動前",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[47,60]},
+      {station_id:930,station_name:"武蔵小山",tracks:"M-3,-1L-2,-3H2L3,-1M-6,-1H6M-6,1H6M-3,1L-2,3H2L3,1",plats:[-1,1]},
+      {section_id:[48,61]},
+      {station_id:931,station_name:"西小山",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[49,62]},
+      {station_id:932,station_name:"洗足",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[50,63]},
+      {station_id:933,station_name:"大岡山",tracks:"M-6,-1H6M-6,1H6M3,1L2.5,0L3,-1M2.5,0H2",plats:[0]},
+      {section_id:[51,64]},
+      {station_id:934,station_name:"奥沢",tracks:"M-6,-1H6M-6,1H6M-6,-1L-5,1M-3,1L-2,3L2,3L3,1M-4,1L-3,3",plats:[-1,2]},
+      {section_id:[8,52,65,30]},
+      {station_id:914,station_name:"田園調布",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M3,-3L2,-1M3,-1L2,-3M3,3L2,1M3,1L2,3M4,-1L4.5,-2H5M4,1L4.5,2H5",plats:[-1,1]},
+      {section_id:[9,53,66,31]},
+      {station_id:915,station_name:"多摩川",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-1,1]},
+      {section_id:[10,54,67,32]},
+      {station_id:916,station_name:"新丸子",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-1,1]},
+      {section_id:[11,55,68,33]},
+      {station_id:57,station_name:"武蔵小杉",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1M4,-1L5,1M4,1L5,-1M5,3L6,-3",plats:[-1,1]},
+      {section_id:[12,56,69,34]},
+      {station_id:918,station_name:"元住吉",tracks:"M-6,-3H-5L-4,-5H4L5,-3H6M-3,-5L-2,-3H2L3,-5M-6,-1H6M-6,1H6M-3,5L-2,3H2L3,5M-6,3H-5L-4,5H4L5,3H6M-4,-1L-3.5,-2H-3M-4,1L-3.5,2H-3M6,-3L5.5,-4H5",plats:[-1,1]},
+      {section_id:[13,57,70,35]},
+      {station_id:919,station_name:"日吉",tracks:"M-2,-1L-3,-3M-2,1L-3,3M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1M4,-1L4.5,0H5M4,1L4.5,0",plats:[-1,1]},
+    ]},
+    "dento": { uri:"dento", line_id:26003, line_name:"田園都市線", sections:[
+      {station_id:26,station_name:"渋谷",tracks:"M-6,-1H6M-6,1H6M-3,-1L-2,1M-3,1L-2,-1M2,1L3,-1",plats:[0]},
+      {section_id:[72,99]},
+      {station_id:942,station_name:"池尻大橋",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[73,100]},
+      {station_id:943,station_name:"三軒茶屋",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[74,101]},
+      {station_id:944,station_name:"駒沢大学",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[75,102]},
+      {station_id:945,station_name:"桜新町",tracks:"M-6,-1H-5L-4,-3H4L5,-1H6M-3,-3L-2,-1H2L3,-3M-6,1H6M-3,1L-2,3H2L3,1",plats:[0,2]},
+      {section_id:[76,103]},
+      {station_id:946,station_name:"用賀",tracks:"M-6,-1H5L6,-3M-6,1H5L6,3M2,1L3,-1",plats:[-1,1]},
+      {section_id:[77,138,155,104]},
+      {station_id:947,station_name:"二子玉川",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,1L3,-1M2,-1L3,1M4,-1L5,-3M4,1L5,3M-2,3L-3,1M-2,1L-3,3",plats:[-1,1]},
+      {section_id:[78,139,156,105]},
+      {station_id:948,station_name:"二子新地",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-2,2]},
+      {section_id:[79,140,157,106]},
+      {station_id:949,station_name:"高津",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1",plats:[-2,2]},
+      {section_id:[80,141,158,107]},
+      {station_id:950,station_name:"溝の口",tracks:"M-6,-3H5L6,-1M-6,-1H3.5L4.5,-3M-6,1H3.5L4.5,3M-6,3H5L6,1M2,1L3,-1M2,-1L3,1",plats:[-1,1]},
+      {section_id:[81,108]},
+      {station_id:951,station_name:"梶が谷",tracks:"M-6,-1H-5L-4,-3H4L5,-1H6M-3,-3L-2,-1H2L3,-3M-3,3L-2,1H2L3,3M-6,1H-5L-4,3H4L5,1H6M2,-1L2.5,0L2,1M2.5,0H4.5M1,3L1.5,4H2",plats:[-1,1]},
+      {section_id:[82,109]},
+      {station_id:952,station_name:"宮崎台",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[83,110]},
+      {station_id:953,station_name:"宮前平",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[84,111]},
+      {station_id:954,station_name:"鷺沼",tracks:"M-5,-3H2L3,-1M-6,-1H6M-6,1H6M-5,3H2L3,1M-6,-1L-5,1M-4.5,-3L-3.5,-1M-4.5,-1L-3.5,-3M-4.5,3L-3.5,1M-4.5,1L-3.5,3M-3,-1L-2,1M-3,1L-2,-1",plats:[-1,1]},
+      {section_id:[85,112]},
+      {station_id:955,station_name:"たまプラーザ",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[86,113]},
+      {station_id:956,station_name:"あざみ野",tracks:"M-6,-1H6M-6,1H6M2,1L3,-1",plats:[-1,1]},
+      {section_id:[87,114]},
+      {station_id:957,station_name:"江田",tracks:"M-6,-1H-5L-4,-3H4L5,-1H6M-3,-3L-2,-1H2L3,-3M-6,1H6M-3,1L-2,3H2L3,1",plats:[-1,1]},
+      {section_id:[88,115]},
+      {station_id:958,station_name:"市が尾",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[89,116]},
+      {station_id:959,station_name:"藤が丘",tracks:"M-6,-1H6M-6,1H6M-3,1L-2,3H2L3,1",plats:[-1,2]},
+      {section_id:[90,117]},
+      {station_id:960,station_name:"青葉台",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[91,118]},
+      {station_id:961,station_name:"田奈",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[92,119]},
+      {station_id:114,station_name:"長津田",tracks:"M-6,-1L-5,-3H5L6,-1M-4,-3L-3,-1H2L3,-3M-6,1H6M-4,1L-3,3H2L3,1M2,1L2.5,0H5M2.5,-2H5M3,-2L4,0M3,0L4,-2M4,-3L4.5,-2M4,1L4.5,0M-3,3L-2,5M-3,5H4M2,-3L2.5,-4M2,-4H3",plats:[-1,1,3]},
+      
+      {section_id:[93,120]},
+      {station_id:963,station_name:"つくし野",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[94,121]},
+      {station_id:964,station_name:"すずかけ台",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[95,122]},
+      {station_id:965,station_name:"南町田",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[96,123]},
+      {station_id:966,station_name:"つきみ野",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[97,124]},
+      {station_id:967,station_name:"中央林間",tracks:"M-6,-1H2M-6,1H2M-3,-1L-2,1M-3,1L-2,-1",plats:[0]},
+    ]},
+    
+    "oimachi": { uri:"oimachi", line_id:26004, line_name:"大井町線", sections:[
+      {station_id:494,station_name:"大井町",tracks:"M-2,-1H6M-2,1H6M2,1L3,-1M2,-1L3,1",plats:[0]},
+      {section_id:[125,142]},
+      {station_id:969,station_name:"下神明",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[126,143]},
+      {station_id:970,station_name:"戸越公園",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[127,144]},
+      {station_id:971,station_name:"中延",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[128,145]},
+      {station_id:972,station_name:"荏原町",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[129,146]},
+      {station_id:973,station_name:"旗の台",tracks:"M-3,-1L-2,-3H2L3,-1M-6,-1H6M-6,1H6M-3,1L-2,3H2L3,1",plats:[-1,1]},
+      {section_id:[130,147]},
+      {station_id:974,station_name:"北千束",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[131,148]},
+      {station_id:933,station_name:"大岡山",tracks:"M-6,-1H6M-6,1H6M-2,1L-2.5,0L-2,-1M-2.5,0H-4.5M2,-1L2.5,-2M2,-2H3M2,1L2.5,2M2,2H3",plats:[-1,1]},
+      {section_id:[132,149]},
+      {station_id:976,station_name:"緑が丘",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[133,150]},
+      {station_id:913,station_name:"自由が丘",tracks:"M-6,-1H6M-6,1H6M2,1L3,-1M2,-1L2.5,-2H3",plats:[-1,1]},
+      {section_id:[134,151]},
+      {station_id:978,station_name:"九品仏",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[135,152]},
+      {station_id:979,station_name:"尾山台",tracks:"M-6,-1H6M-6,1H6",plats:[-1,1]},
+      {section_id:[136,153]},
+      {station_id:980,station_name:"等々力",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[137,154]},
+      {station_id:981,station_name:"上野毛",tracks:"M-6,-1H6M-3,3L-2,1H2L3,3M-6,1H-5L-4,3H4L5,1H6",plats:[0]},
+      {section_id:[138,155]},
+      {station_id:947,station_name:"二子玉川",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,1L3,-1M2,-1L3,1M4,-1L5,-3M4,1L5,3M-2,3L-3,1M-2,1L-3,3",plats:[-1,1]},
+      {section_id:[78,139,156,105]},
+      {station_id:948,station_name:"二子新地",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6",plats:[-2,2]},
+      {section_id:[79,140,157,106]},
+      {station_id:949,station_name:"高津",tracks:"M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1",plats:[-2,2]},
+      {section_id:[80,141,158,107]},
+      {station_id:950,station_name:"溝の口",tracks:"M-6,-3H5L6,-1M-6,-1H3.5L4.5,-3M-6,1H3.5L4.5,3M-6,3H5L6,1M2,1L3,-1M2,-1L3,1",plats:[-1,1]},
+      {section_id:[81,108]},
+    ]},
+    "shinyokohama": { uri:"shinyokohama", line_id:26009, line_name:"東急新横浜線", sections:[
+      {station_id:919,station_name:"日吉",tracks:"M-2,-1L-3,-3M-2,1L-3,3M-6,-3H6M-6,-1H6M-6,1H6M-6,3H6M2,-3L3,-1M2,3L3,1M4,-1L4.5,0H5M4,1L4.5,0",plats:[-1,1]},
+      {section_id:[263,265]},
+      {station_id:982,station_name:"新綱島",tracks:"M-6,-1H6M-6,1H6",plats:[0]},
+      {section_id:[264,266]},
+      {station_id:983,station_name:"新横浜",tracks:"M-5,-1L-4,1M-5,1L-4,-1M-2,1L-3,-1M-2,3L-3,1M-6,-1H6M-6,1H5V4H-5V5H6M-2,3H2M2,1L3,-1M2,3L3,1M4,1L5,-1",plats:[0,1]},
+    ]},
+  };
+
+  const destination_name_tymg = {0:"",33:"副都心線",54:"三田線",67:"南北線",71:"目黒",73:"武蔵小山",76:"大岡山",77:"奥沢",78:"渋谷",84:"自由が丘",88:"武蔵小杉",89:"元住吉",90:"日吉",93:"菊名",98:"横浜",103:"元町",108:"新横浜",111:"相鉄線"};
+  const destination_name_dtom = {0:"",45:"半蔵門線",51:"大井町",53:"戸越公園",56:"旗の台",58:"大岡山",60:"自由が丘",65:"渋谷",71:"二子玉川",74:"溝の口",75:"梶が谷",78:"鷺沼",86:"長津田",91:"中央林間",96:"こども",137:"元住吉"};
+
+  function createSVG(tag){ return document.createElementNS("http://www.w3.org/2000/svg", tag); }
+
+  const opchar = {0:"K",1:"M",2:"K",3:"S",4:"T",5:"M",6:"G",7:"S",8:"T",9:"G"};
+  function opno(no, line){
+    if(typeof no !== "number") return no;
+    if(no===999) return no;
+    if(line==null || line===26001 || line===26002 || line===26009){
+      const hund = (no/100|0);
+      if(hund in opchar) return ("00"+no).slice(-2)+opchar[hund];
+    }
+    if(line===26003 && no < 100) return ("00"+no).slice(-2) + (no < 50 ? "K" : (no%2===0 ? "T" : "S"));
+    return ("00"+no).slice(no<10?-1:no<100?-2:-3);
+  }
+
+  let curline = "dento";
+  function trans(line){ if(curline!==line) location.search = line; }
+
+  function buildUI(){
+    curline = location.search;
+    if(curline.length>0) curline = curline.substring(1);
+    if(!(curline in linedata)) curline = "dento";
+
+    const sel = document.getElementById("sel");
+    sel.innerHTML = "";
+    Object.keys(linedata).forEach((k)=>{
+      const btn = document.createElement("button");
+      btn.className = "line"+linedata[k].line_id;
+      btn.textContent = linedata[k].line_name;
+      btn.disabled = (k===curline);
+      btn.addEventListener("click", ()=>trans(k));
+      sel.appendChild(btn);
+    });
+
+    const main = document.getElementById("main");
+    main.innerHTML = "";
+    linedata[curline].sections.forEach((o)=>{
+      const sec = document.createElement("div");
+      sec.style.height = "192px";
+      sec.style.cssFloat = "left";
+      sec.style.position = "relative";
+      const svg = createSVG("svg");
+      svg.setAttribute("height","192px");
+
+      if("station_id" in o){
+        sec.style.width="192px";
+        svg.setAttribute("width","192px");
+        svg.setAttribute("viewBox","-96 -96 192 192");
+
+        const text=createSVG("text");
+        text.setAttribute("x",0); text.setAttribute("y",6);
+        text.setAttribute("font-size",16); text.setAttribute("font-weight","bold");
+        text.setAttribute("text-anchor","middle");
+        text.textContent=o.station_name;
+        svg.appendChild(text);
+
+        if("tracks" in o){
+          const track=createSVG("path");
+          track.setAttribute("d",o.tracks);
+          track.setAttribute("stroke","black");
+          track.setAttribute("stroke-width",0.125);
+          track.setAttribute("fill","none");
+          track.setAttribute("transform","scale(16)");
+          svg.appendChild(track);
+        }
+        if("plats" in o){
+          o.plats.forEach((p)=>{
+            const plat=createSVG("rect");
+            plat.setAttribute("x",-31.5);
+            plat.setAttribute("y",p*32-9.5);
+            plat.setAttribute("width",63);
+            plat.setAttribute("height",19);
+            plat.setAttribute("stroke","black");
+            plat.setAttribute("stroke-width",1);
+            plat.setAttribute("fill","none");
+            svg.appendChild(plat);
+          });
+        }
+        for(let i=-3;i<=3;i++){
+          if(i===0) continue;
+          const canv=document.createElement("div");
+          canv.id = "sta"+o.station_id+"p"+i;
+          canv.className="section";
+          canv.style.top = (i*32 + (i<0?64:32))+"px";
+          canv.style.left="64px";
+          sec.appendChild(canv);
+        }
+      }
+
+      if("section_id" in o){
+        sec.style.width="64px";
+        svg.setAttribute("width","64px");
+        svg.setAttribute("viewBox","-32 -96 64 192");
+        o.section_id.forEach((s,i,a)=>{
+          const line=createSVG("line");
+          line.setAttribute("x1",-64);
+          line.setAttribute("y1",(i-a.length/2)*-32-16);
+          line.setAttribute("x2",64);
+          line.setAttribute("y2",(i-a.length/2)*-32-16);
+          line.setAttribute("stroke","black");
+          line.setAttribute("stroke-width",2);
+          svg.appendChild(line);
+
+          const canv=document.createElement("div");
+          canv.id="sec"+s;
+          canv.className="section";
+          canv.style.top=((i-a.length/2)*-32+32)+"px";
+          canv.style.left="0";
+          sec.appendChild(canv);
+        });
+      }
+
+      sec.insertBefore(svg, sec.firstChild);
+      main.appendChild(sec);
+    });
+  }
+
+  function clearTrains(){
+    linedata[curline].sections.forEach((o)=>{
+      if("station_id" in o){
+        for(let i=-3;i<=3;i++){
+          if(i===0) continue;
+          const elem=document.getElementById("sta"+o.station_id+"p"+i);
+          if(!elem) continue;
+          while(elem.lastChild) elem.removeChild(elem.lastChild);
+        }
+      }
+      if("section_id" in o){
+        o.section_id.forEach((s)=>{
+          const elem=document.getElementById("sec"+s);
+          if(!elem) return;
+          while(elem.lastChild) elem.removeChild(elem.lastChild);
+        });
+      }
+    });
+    document.getElementById("log").textContent="";
+  }
+
+  // Apply new train placements in one shot (reduces flicker)
+  function commitBuckets(buckets){
+    linedata[curline].sections.forEach((o)=>{
+      if("station_id" in o){
+        for(let i=-3;i<=3;i++){
+          if(i===0) continue;
+          const id="sta"+o.station_id+"p"+i;
+          const elem=document.getElementById(id);
+          if(!elem) continue;
+          while(elem.lastChild) elem.removeChild(elem.lastChild);
+          if(buckets[id]) buckets[id].forEach((n)=>elem.appendChild(n));
+        }
+      }
+      if("section_id" in o){
+        o.section_id.forEach((s)=>{
+          const id="sec"+s;
+          const elem=document.getElementById(id);
+          if(!elem) return;
+          while(elem.lastChild) elem.removeChild(elem.lastChild);
+          if(buckets[id]) buckets[id].forEach((n)=>elem.appendChild(n));
+        });
+      }
+    });
+  }
+
+
+  function placeTrain(o, buckets){
+    // normalize types (some feeds use strings)
+    if(o){
+      if("line_id" in o) o.line_id = Number(o.line_id);
+      if("train_line_id" in o && o.train_line_id != null) o.train_line_id = Number(o.train_line_id);
+      if("station_id" in o && o.station_id != null) o.station_id = Number(o.station_id);
+      if("section_id" in o && o.section_id != null) o.section_id = Number(o.section_id);
+      if("track_number" in o && o.track_number != null) o.track_number = Number(o.track_number);
+      if("operation_number" in o && o.operation_number != null) o.operation_number = Number(o.operation_number);
+      if("destination_station_code" in o && o.destination_station_code != null) o.destination_station_code = Number(o.destination_station_code);
+      if("delay_time" in o && o.delay_time != null) o.delay_time = Number(o.delay_time);
+    }
+    const tra=document.createElement("div");
+    const lineClass = "line"+(("train_line_id" in o && o.train_line_id!=null)?o.train_line_id:o.line_id);
+    tra.className="train "+lineClass;
+    tra.addEventListener("click", (ev)=>{ ev.stopPropagation(); fetchAndShowSchedule(o); });
+
+    const box=document.createElement("div");
+    box.className="box";
+    const op = opno(o.operation_number, ("train_line_id" in o ? o.train_line_id : o.line_id));
+    let kindLabel = (o.kind && o.kind!=null) ? o.kind : "";
+    // Oimachi (26004) & Den-en-toshi (26003): 5-car Local ("普") -> show as "B"
+    const cars = ("num_of_cars" in o && o.num_of_cars != null) ? Number(o.num_of_cars) : NaN;
+    if ((linedata[curline].line_id === 26004 || linedata[curline].line_id === 26003) && cars === 5 && kindLabel === "普") {
+      kindLabel = "B";
+    }
+    box.innerHTML = `<div style="float:left;">${kindLabel}</div><div style="position:absolute;width:52px;text-align:right;">${op}</div>`;
+    tra.appendChild(box);
+
+    const dir=document.createElement("div");
+    dir.className = o.up ? "up" : "down";
+    tra.appendChild(dir);
+
+    if(o.delay_time>0){
+      const delay=document.createElement("div");
+      delay.className="delay";
+      delay.textContent="+"+o.delay_time;
+      tra.appendChild(delay);
+    }
+    if(o.num_of_cars && o.num_of_cars!=="0" && o.num_of_cars!=="99"){
+      const info=document.createElement("div");
+      info.className="info";
+      info.textContent=o.num_of_cars;
+      tra.appendChild(info);
+    }
+    const form=document.createElement("div");
+    form.className="form";
+    if(o.affiliation) form.textContent += (o.affiliation==null?"？":o.affiliation);
+    if(o.train_orchestration_number && o.train_orchestration_number!=="00") form.textContent += o.train_orchestration_number;
+    if(form.textContent) tra.appendChild(form);
+
+    const dest=document.createElement("div");
+    dest.className="dest";
+    if("destination_station_code" in o){
+      const lid = linedata[curline].line_id;
+      if(lid===26001 || lid===26002 || lid===26009){
+        dest.textContent = (o.destination_station_code in destination_name_tymg) ? destination_name_tymg[o.destination_station_code] : String(-o.destination_station_code);
+      }
+      if(lid===26003 || lid===26004){
+        dest.textContent = (o.destination_station_code in destination_name_dtom) ? destination_name_dtom[o.destination_station_code] : String(-o.destination_station_code);
+      }
+    }
+    if(dest.textContent) tra.appendChild(dest);
+
+    let elemId=null;
+    if(o.station_id!=null){
+      let tn=o.track_number;
+      if(o.station_id===910){
+        if(tn>0) tn = 3-tn; else tn = -3 - tn*2;
+      }
+      if(o.station_id===913 && (linedata[curline].line_id===26001 || linedata[curline].line_id===26002 || linedata[curline].line_id===26009)){
+        if(tn>0) tn = 3-tn; else tn = -3-tn;
+      }
+      if(o.station_id===26 && (linedata[curline].line_id===26003 || linedata[curline].line_id===26004)){
+        if(tn<0) tn = -3-tn;
+      }
+      elemId = "sta"+o.station_id+"p"+tn;
+    } else if(o.section_id!=null){
+      elemId = "sec"+o.section_id;
+    }
+
+    if(buckets){
+      if(!(elemId in buckets)) buckets[elemId]=[];
+      buckets[elemId].push(tra);
+    } else {
+      const elem = elemId ? document.getElementById(elemId) : null;
+      if(elem) elem.appendChild(tra);
+      else document.getElementById("log").textContent += "Unknown: "+elemId+"\t"+JSON.stringify(o)+"\n";
+    }
+  }
+
+  async function update(){
+    const buckets = {};
+    const url = DATA_URLS[curline];
+    if(!url){
+      diag("この路線のデータURLが未設定です: "+curline);
+      return;
+    }
+    try{
+      const res = await fetch(url, {cache:"no-store"});
+      if(!res.ok) throw new Error(`HTTP ${res.status}`);
+      const json = await res.json();
+      if(!json || !Array.isArray(json.trains)) throw new Error("trains配列が見つかりません");
+      json.trains.forEach((t)=>{
+        if(Number(t.line_id) !== linedata[curline].line_id) return;
+        placeTrain(t, buckets);
+      });
+            commitBuckets(buckets);
+      diag(`JS起動OK / ${linedata[curline].line_name} / ${new Date().toLocaleTimeString()} / trains=${json.trains.length}`);
+    }catch(err){
+      diag(`取得失敗: ${url}\n${err && err.message ? err.message : err}\n\n※別ドメイン取得なので、サイト側がCORSを許可していないとブラウザで読めません。`);
+    }
+  }
+
+  function start(){
+    buildUI();
+    
+    // modal close handlers
+    const closeBtn = document.getElementById("trainModalClose");
+    const backdrop = document.getElementById("trainModalBackdrop");
+    if (closeBtn) closeBtn.addEventListener("click", closeTrainModal);
+    if (backdrop) backdrop.addEventListener("click", closeTrainModal);
+    document.addEventListener("keydown", (e)=>{ if(e.key==="Escape") closeTrainModal(); });
+
+
+  const iframeClose = document.getElementById("iframeClose");
+  const iframeBackdrop = document.querySelector(".iframe-backdrop");
+  if (iframeClose) iframeClose.onclick = ()=>{
+    document.getElementById("iframeView").src = "";
+    document.getElementById("iframeModal").style.display="none";
+  };
+  if (iframeBackdrop) iframeBackdrop.onclick = ()=>{
+    document.getElementById("iframeView").src = "";
+    document.getElementById("iframeModal").style.display="none";
+  };
+
+update();
+    setInterval(update, 6000);
+  }
+  
+  const TID_SCHEDULE_BASE = "https://tokyu-tid.s3.amazonaws.com/train_schedules";
+
+  function scheduleUrl(lineId, operationNumber, up){
+    const dir = up ? "up" : "down";
+    return `${TID_SCHEDULE_BASE}?lineId=${encodeURIComponent(lineId)}&operationNumber=${encodeURIComponent(operationNumber)}&direction=${dir}`;
+  }
+
+  function openTrainModal(title, bodyHtml){
+    const modal = document.getElementById("trainModal");
+    const t = document.getElementById("trainModalTitle");
+    const b = document.getElementById("trainModalBody");
+    t.textContent = title;
+    b.innerHTML = bodyHtml;
+    modal.style.display = "block";
+  }
+
+  function closeTrainModal(){
+    const modal = document.getElementById("trainModal");
+    if (modal) modal.style.display = "none";
+  }
+
+  async function fetchAndShowSchedule(train){
+  const lineId = ("train_line_id" in train && train.train_line_id != null) ? Number(train.train_line_id) : Number(train.line_id);
+  const op = train.operation_number;
+  const url = scheduleUrl(lineId, op, !!train.up);
+
+  const modal = document.getElementById("iframeModal");
+  const iframe = document.getElementById("iframeView");
+  const title = document.querySelector(".iframe-title");
+
+  title.textContent = `運行番号 ${opno(op, lineId)} / ${train.up ? "上り" : "下り"}`;
+  iframe.src = url;
+  modal.style.display = "block";
+}
+
+  function escapeHtml(str){
+    return String(str)
+      .replaceAll("&","&amp;")
+      .replaceAll("<","&lt;")
+      .replaceAll(">","&gt;")
+      .replaceAll('"',"&quot;")
+      .replaceAll("'","&#39;");
+  }
+
+document.addEventListener("DOMContentLoaded", ()=>{ try{ start(); } catch(e){ diag("init失敗: "+(e?.message||e)); } }, false);
+</script>
+
+  <div id="trainModal" class="modal" style="display:none;">
+    <div class="modal-backdrop" id="trainModalBackdrop"></div>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="trainModalTitle">
+      <div class="modal-header">
+        <div id="trainModalTitle" class="modal-title">列車情報</div>
+        <button id="trainModalClose" class="modal-close" aria-label="Close">×</button>
+      </div>
+      <div id="trainModalBody" class="modal-body">Loading...</div>
+    </div>
+  </div>
+
+
+<div id="iframeModal" class="iframe-modal" style="display:none;">
+  <div class="iframe-backdrop"></div>
+  <div class="iframe-card">
+    <div class="iframe-header">
+      <div class="iframe-title">列車詳細</div>
+      <button id="iframeClose" class="iframe-close">×</button>
+    </div>
+    <iframe id="iframeView" src="" loading="lazy"></iframe>
+  </div>
+</div>
+
+</body>
+</html>
